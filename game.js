@@ -80,6 +80,184 @@ const ENEMY_STATS = {
 	shockTank: { hp: 280, speed: 65, damage: 26, color: 0xff3a3a, w: 56, h: 44 }
 };
 
+class ArcadeMoodFXPipeline extends Phaser.Renderer.WebGL.Pipelines.PostFXPipeline {
+	constructor(game) {
+		super({
+			game,
+			renderTarget: true,
+			fragShader: `
+precision mediump float;
+
+uniform sampler2D uMainSampler;
+varying vec2 outTexCoord;
+uniform float uTime;
+uniform vec2 uResolution;
+uniform float uStrength;
+
+float hash(vec2 p) {
+	return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+}
+
+void main() {
+	vec2 uv = outTexCoord;
+	vec2 centered = uv - 0.5;
+	float radius = dot(centered, centered);
+
+	// Subtle CRT-style curve
+	uv += centered * radius * 0.04 * uStrength;
+
+	float ca = 0.0018 * uStrength;
+	vec4 base = texture2D(uMainSampler, uv);
+	float r = texture2D(uMainSampler, uv + vec2(ca, 0.0)).r;
+	float g = base.g;
+	float b = texture2D(uMainSampler, uv - vec2(ca, 0.0)).b;
+	vec3 col = vec3(r, g, b);
+
+	float scan = sin((uv.y * uResolution.y * 1.08) + (uTime * 6.2)) * 0.05 * uStrength;
+	col += scan;
+
+	float grain = (hash(uv * uResolution.xy + vec2(uTime * 37.0, uTime * 19.0)) - 0.5) * 0.08 * uStrength;
+	col += grain;
+
+	float vig = 1.0 - smoothstep(0.28, 0.78, length(centered));
+	col *= 0.86 + (vig * 0.14);
+
+	// Slight cool tint to strengthen identity
+	col = vec3(col.r * 1.02, col.g * 1.00, col.b * 1.05);
+
+	gl_FragColor = vec4(col, base.a);
+}
+`
+		});
+	}
+
+	onPreRender() {
+		this.set1f('uTime', this.game.loop.time * 0.001);
+		this.set2f('uResolution', this.renderer.width, this.renderer.height);
+		this.set1f('uStrength', 1.0);
+	}
+}
+
+function applyGlobalVisualShader(scene) {
+	if (!scene || !scene.renderer || !scene.renderer.gl || !scene.renderer.pipelines) return;
+	if (!scene.cameras || !scene.cameras.main) return;
+	if (!scene.renderer.pipelines.get('ArcadeMoodFX')) {
+		scene.renderer.pipelines.addPostPipeline('ArcadeMoodFX', ArcadeMoodFXPipeline);
+	}
+	scene.cameras.main.setPostPipeline('ArcadeMoodFX');
+}
+
+function shadeColor(color, factor) {
+	const f = Phaser.Math.Clamp(factor, 0, 2);
+	const r = Phaser.Math.Clamp(Math.round(((color >> 16) & 255) * f), 0, 255);
+	const g = Phaser.Math.Clamp(Math.round(((color >> 8) & 255) * f), 0, 255);
+	const b = Phaser.Math.Clamp(Math.round((color & 255) * f), 0, 255);
+	return (r << 16) | (g << 8) | b;
+}
+
+function createEnemyVisuals(scene, enemy) {
+	if (!scene || !enemy || enemy.isBoss) return;
+	const base = enemy.baseColor || 0xffffff;
+	const bright = shadeColor(base, 1.2);
+	const dark = shadeColor(base, 0.65);
+	const parts = [];
+
+	const makeRect = (ox, oy, w, h, color, alpha, depthOffset) => {
+		const r = scene.add.rectangle(enemy.x + ox, enemy.y + oy, w, h, color, alpha === undefined ? 1 : alpha).setDepth((enemy.depth || 50) + (depthOffset || 1));
+		parts.push(r);
+		return r;
+	};
+	const makeCircle = (ox, oy, radius, color, alpha, depthOffset) => {
+		const c = scene.add.circle(enemy.x + ox, enemy.y + oy, radius, color, alpha === undefined ? 1 : alpha).setDepth((enemy.depth || 50) + (depthOffset || 1));
+		parts.push(c);
+		return c;
+	};
+
+	enemy.visualParts = parts;
+	enemy.visualState = {};
+
+	if (enemy.enemyType === 'swiftProbe') {
+		enemy.visualState.accent = makeRect(0, 0, Math.max(8, enemy.width - 10), 4, dark, 0.9, 1);
+		enemy.visualState.eye = makeCircle(0, -3, 3, 0xfff6db, 0.95, 2);
+	}
+	if (enemy.enemyType === 'heavyGunner') {
+		enemy.visualState.accent = makeRect(0, -6, enemy.width - 10, 6, dark, 0.9, 1);
+		enemy.visualState.barrel = makeRect(0, -1, 14, 4, bright, 0.95, 2);
+	}
+	if (enemy.enemyType === 'stalker') {
+		enemy.visualState.accent = makeRect(0, -4, enemy.width - 8, 4, bright, 0.9, 1);
+		enemy.visualState.eye = makeCircle(0, -3, 2.5, 0xff9bf3, 0.95, 2);
+	}
+	if (enemy.enemyType === 'shieldSentinel') {
+		enemy.visualState.accentH = makeRect(0, 0, enemy.width - 8, 4, bright, 0.85, 1);
+		enemy.visualState.accentV = makeRect(0, 0, 4, enemy.height - 8, bright, 0.85, 1);
+		enemy.visualState.eye = makeCircle(0, 0, 4, 0xd9fff7, 0.95, 2);
+	}
+	if (enemy.enemyType === 'bomber') {
+		enemy.visualState.accent = makeRect(0, -5, enemy.width - 8, 4, dark, 0.95, 1);
+		enemy.visualState.spark = makeCircle(0, -enemy.height * 0.5 - 8, 2.5, 0xfff59a, 0.95, 2);
+	}
+	if (enemy.enemyType === 'suctioner') {
+		enemy.visualState.ring = makeCircle(0, 0, 10, dark, 0.28, 1);
+		enemy.visualState.eye = makeCircle(0, 0, 3.5, 0xd8e6ff, 0.9, 2);
+	}
+	if (enemy.enemyType === 'shockTank') {
+		enemy.visualState.treadL = makeRect(-enemy.width * 0.33, 0, 7, enemy.height - 8, dark, 0.92, 1);
+		enemy.visualState.treadR = makeRect(enemy.width * 0.33, 0, 7, enemy.height - 8, dark, 0.92, 1);
+		enemy.visualState.eye = makeCircle(0, -5, 3.5, 0xffd6d6, 0.95, 2);
+	}
+}
+
+function destroyEnemyVisuals(enemy) {
+	if (!enemy || !enemy.visualParts) return;
+	enemy.visualParts.forEach((part) => {
+		if (part && part.active) part.destroy();
+	});
+	enemy.visualParts = null;
+	enemy.visualState = null;
+}
+
+function updateEnemyVisuals(scene, enemy, now) {
+	if (!scene || !enemy || !enemy.active || enemy.isBoss) return;
+	if (!enemy.visualState) return;
+	const v = enemy.visualState;
+	const dir = enemy.body && enemy.body.velocity.x >= 0 ? 1 : -1;
+	const pulse = 0.75 + (Math.sin(now * 0.01 + enemy.x * 0.02) * 0.25);
+	const hitFlash = now <= (enemy.hitFlashUntil || 0);
+
+	if (!hitFlash) enemy.setFillStyle(enemy.baseColor || 0xffffff);
+
+	if (v.accent) v.accent.setPosition(enemy.x, enemy.y);
+	if (v.accentH) v.accentH.setPosition(enemy.x, enemy.y);
+	if (v.accentV) v.accentV.setPosition(enemy.x, enemy.y);
+	if (v.ring) v.ring.setPosition(enemy.x, enemy.y);
+	if (v.treadL) v.treadL.setPosition(enemy.x - enemy.width * 0.33, enemy.y);
+	if (v.treadR) v.treadR.setPosition(enemy.x + enemy.width * 0.33, enemy.y);
+
+	if (v.barrel) {
+		v.barrel.setPosition(enemy.x + dir * (enemy.width * 0.24), enemy.y - 1);
+		v.barrel.angle = dir < 0 ? 180 : 0;
+	}
+
+	if (v.spark) {
+		v.spark.setPosition(enemy.x, enemy.y - enemy.height * 0.5 - 8);
+		v.spark.setAlpha(hitFlash ? 1 : pulse);
+	}
+
+	if (v.eye) {
+		v.eye.setPosition(enemy.x, enemy.y + (enemy.enemyType === 'shockTank' ? -5 : (enemy.enemyType === 'stalker' ? -3 : 0)));
+		v.eye.setAlpha(hitFlash ? 1 : pulse);
+	}
+
+	if (enemy.visualParts) {
+		enemy.visualParts.forEach((part) => {
+			if (!part || !part.active) return;
+			part.visible = enemy.visible;
+			if (hitFlash) part.setAlpha(Math.min(1, (part.alpha || 0.9) + 0.15));
+		});
+	}
+}
+
 function setEnemyState(enemy, state, now, duration) {
 	enemy.aiState = state;
 	enemy.stateUntil = now + duration;
@@ -111,6 +289,31 @@ function spawnFireHazard(scene, x, y, width, height, damage, ttl) {
 	scene.tweens.add({ targets: hz, alpha: { from: 0.65, to: 0.35 }, duration: 300, yoyo: true, repeat: -1 });
 	scene.time.delayedCall(ttl || 3200, () => { if (hz && hz.active) hz.destroy(); });
 	return hz;
+}
+
+function spawnShockTrailHazard(scene, x, y, width, height, damage, ttl) {
+	const hz = scene.add.rectangle(x, y, width, height, 0x5be3ff, 0.78).setDepth(56).setStrokeStyle(2, 0xd7fbff, 0.95);
+	scene.physics.add.existing(hz);
+	if (hz.body) {
+		hz.body.setAllowGravity(false);
+		hz.body.setImmovable(true);
+	}
+	hz.damage = damage;
+	scene.hazards.add(hz);
+	scene.tweens.add({ targets: hz, alpha: { from: 0.85, to: 0.35 }, duration: 110, yoyo: true, repeat: -1 });
+	scene.time.delayedCall(ttl || 900, () => { if (hz && hz.active) hz.destroy(); });
+	return hz;
+}
+
+function calcLobVelocity(fromX, fromY, toX, toY, gravityY) {
+	const g = gravityY || 600;
+	const dx = toX - fromX;
+	const dy = toY - fromY;
+	const t = Phaser.Math.Clamp(Math.abs(dx) / 220, 0.45, 1.05);
+	const vx = Phaser.Math.Clamp(dx / t, -280, 280);
+	let vy = (dy - (0.5 * g * t * t)) / t;
+	vy = Phaser.Math.Clamp(vy, -460, -190);
+	return { vx, vy };
 }
 
 function playEnemyDeathFx(scene, enemy) {
@@ -148,6 +351,7 @@ function destroyEnemy(enemy) {
 	if (enemy._dying) return;
 	enemy._dying = true;
 	playEnemyDeathFx(enemy.scene, enemy);
+	destroyEnemyVisuals(enemy);
 	if (enemy.shieldSprite && enemy.shieldSprite.active) enemy.shieldSprite.destroy();
 	if (enemy.auraSprite && enemy.auraSprite.active) enemy.auraSprite.destroy();
 	if (enemy.body) {
@@ -665,6 +869,7 @@ function spawnEnemyByType(scene, type) {
 	if (type === 'bomber') {
 		setEnemyState(enemy, 'aim', scene.time.now, 900);
 		enemy.aggression = 1.1;
+		enemy.lobShotsLeft = 0;
 	}
 	if (type === 'suctioner') {
 		setEnemyState(enemy, 'pull', scene.time.now, 1050);
@@ -677,6 +882,8 @@ function spawnEnemyByType(scene, type) {
 		enemy.body.setBounce(0.02);
 		enemy.aggression = 1.25;
 	}
+
+	createEnemyVisuals(scene, enemy);
 
 	scene.enemies.add(enemy);
 	return enemy;
@@ -768,8 +975,8 @@ function updateEnemyAI(scene, enemy, now, delta) {
 					if (!ally || !ally.active || ally === enemy) return;
 					const d = Phaser.Math.Distance.Between(enemy.x, enemy.y, ally.x, ally.y);
 					ally.shielded = d <= enemy.shieldRadius;
-					if (ally.shielded) ally.setStrokeStyle(2, 0x7dffe3);
-					else ally.setStrokeStyle(2, 0xffffff);
+						if (ally.shielded) ally.setStrokeStyle(2, 0x7dffe3);
+						else ally.setStrokeStyle(2, 0xffffff);
 				});
 				if (now >= enemy.stateUntil) setEnemyState(enemy, 'pulse', now, 340);
 			} else if (enemy.aiState === 'pulse') {
@@ -788,17 +995,26 @@ function updateEnemyAI(scene, enemy, now, delta) {
 		case 'bomber': {
 			if (enemy.aiState === 'aim') {
 				enemy.body.setVelocityX((px > enemy.x ? -1 : 1) * enemy.moveSpeed * 0.8);
-				if (now >= enemy.stateUntil) setEnemyState(enemy, 'lob', now, 700);
+				if (now >= enemy.stateUntil) {
+					enemy.lobShotsLeft = 2;
+					enemy.lastBomb = 0;
+					setEnemyState(enemy, 'lob', now, 760);
+				}
 			} else if (enemy.aiState === 'lob') {
 				enemy.body.setVelocityX(0);
-				if (!enemy.lastBomb || now > enemy.lastBomb + 420) {
+				if ((enemy.lobShotsLeft || 0) > 0 && (!enemy.lastBomb || now > enemy.lastBomb + 260)) {
 					enemy.lastBomb = now;
-					const dx = px - enemy.x;
-					const bomb = spawnEnemyProjectile(scene, enemy.x, enemy.y - 8, Phaser.Math.Clamp(dx * 1.25, -210, 210), -320, 0xff9a55, 12, enemy.damage + 2, 2400, 520);
+					enemy.lobShotsLeft--;
+					const targetX = px + ((scene.player.body && scene.player.body.velocity) ? scene.player.body.velocity.x * 0.18 : 0);
+					const targetY = py - 14;
+					const lob = calcLobVelocity(enemy.x, enemy.y - 8, targetX, targetY, 640);
+					const dirToPlayer = px > enemy.x ? 1 : -1;
+					const vx = Math.abs(lob.vx) < 120 ? dirToPlayer * 120 : lob.vx;
+					const bomb = spawnEnemyProjectile(scene, enemy.x + (dirToPlayer * 10), enemy.y - 10, vx, lob.vy, 0xff9a55, 12, enemy.damage + 2, 2600, 640);
 					if (bomb) {
 						scene.physics.add.collider(bomb, scene.floor, () => {
 							if (!bomb.active) return;
-							spawnFireHazard(scene, bomb.x, 558, 56, 18, enemy.damage + 3, 3500);
+							spawnFireHazard(scene, bomb.x, 558, 56, 18, enemy.damage + 3, 3200);
 							bomb.destroy();
 						});
 					}
@@ -835,9 +1051,10 @@ function updateEnemyAI(scene, enemy, now, delta) {
 				if (now >= enemy.stateUntil) setEnemyState(enemy, 'charge', now, 520);
 			} else if (enemy.aiState === 'charge') {
 				enemy.body.setVelocityX(enemy.chargeDir * 450);
-				if (!enemy.lastSlam || now > enemy.lastSlam + 180) {
+				if (!enemy.lastSlam || now > enemy.lastSlam + 110) {
 					enemy.lastSlam = now;
-					spawnFireHazard(scene, enemy.x + enemy.chargeDir * 18, 562, 34, 12, enemy.damage - 5, 620);
+					const trailY = enemy.y + (enemy.height * 0.5) + 2;
+					spawnShockTrailHazard(scene, enemy.x - (enemy.chargeDir * 8), trailY, 44, 14, enemy.damage - 5, 780);
 				}
 				if (now >= enemy.stateUntil) setEnemyState(enemy, 'recover', now, 850);
 			} else {
@@ -856,6 +1073,8 @@ function create() {
 	/* ASSETS & GRAPHICS ZONE */
 	/* ========================================================================= */
 	/* All visual assets (sprites, backgrounds, UI elements) should be managed here. */
+	applyGlobalVisualShader(this);
+
 	if (!this.textures.exists('gal1')) {
 		const g = this.add.graphics();
 		g.fillStyle(0x08131d, 1).fillRect(0, 0, 256, 256);
@@ -1021,6 +1240,19 @@ function create() {
 				sfxTone('sine', 280, 760, 0.14, 0.06);
 				sfxTone('square', 160, 320, 0.12, 0.03);
 			}
+		};
+
+		scene.playEnemyDefeatSfx = (isBoss) => {
+			if (!window._combatActive) return;
+			if (ctx.state === 'suspended') ctx.resume();
+			if (isBoss) {
+				sfxTone('square', 220, 110, 0.16, 0.07);
+				sfxTone('triangle', 130, 70, 0.2, 0.06);
+				sfxNoise(900, 0.8, 0.12, 0.03);
+				return;
+			}
+			sfxTone('square', 300, 170, 0.08, 0.05);
+			sfxNoise(1800, 1.4, 0.06, 0.02);
 		};
 
 		const music = { mode: 'shop', t: 0 };
@@ -1270,6 +1502,7 @@ function create() {
 		scene.onEnemyDefeated = (enemy) => {
 			if (!enemy) return;
 			const wasBoss = !!enemy.isBoss;
+			if (scene.playEnemyDefeatSfx) scene.playEnemyDefeatSfx(wasBoss);
 			destroyEnemy(enemy);
 			scene.showDefeatReward(DEFEAT_REWARD);
 			if (wasBoss) {
@@ -1315,6 +1548,7 @@ function create() {
 				scene.onEnemyDefeated(enemy);
 				return;
 			}
+			enemy.hitFlashUntil = scene.time.now + 90;
 			enemy.setFillStyle(0xff0000);
 			scene.time.delayedCall(90, () => {
 				if (enemy && enemy.active) enemy.setFillStyle(enemy.baseColor);
@@ -1406,17 +1640,17 @@ function create() {
 
 		scene.createShopBtn = (x, y, getText, color, getPrice, onBuy) => {
 			const container = scene.add.container(x, y);
-			const bg = scene.add.rectangle(0, 0, 280, 40, color, 0.6).setStrokeStyle(2, color).setInteractive({ useHandCursor: true });
+			const bg = scene.add.rectangle(0, 0, 280, 40, color, 0.65).setInteractive({ useHandCursor: true });
 			const resolveText = () => {
 				if (typeof getText === 'function') return getText();
 				return getText;
 			};
-			const txt = scene.add.text(-125, -10, '', { fontFamily: 'monospace', fontSize: 15, color: '#fff', fontStyle: 'bold' });
+			const txt = scene.add.text(-125, -10, '', { fontFamily: 'monospace', fontSize: 15, color: '#fff' });
 			const resolvePrice = () => {
 				if (typeof getPrice === 'function') return getPrice();
 				return getPrice;
 			};
-			const prc = scene.add.text(75, -10, '', { fontFamily: 'monospace', fontSize: 15, color: '#ffea00', fontStyle: 'bold' });
+			const prc = scene.add.text(75, -10, '', { fontFamily: 'monospace', fontSize: 15, color: '#ffea00' });
 			const refreshText = () => {
 				txt.setText(resolveText());
 			};
@@ -1426,8 +1660,6 @@ function create() {
 			refreshText();
 			refreshPrice();
 			container.add([bg, txt, prc]);
-			bg.on('pointerover', () => { bg.setFillStyle(color, 1); txt.setTint(0xffff00); });
-			bg.on('pointerout', () => { bg.setFillStyle(color, 0.6); txt.clearTint(); });
 			bg.on('pointerdown', () => {
 				const price = resolvePrice();
 				if (scene.playerState.credits < price) return;
@@ -1452,25 +1684,21 @@ function create() {
 
 			const nextStep = scene.gameFlow.steps[scene.gameFlow.stepIndex] || 'phase1';
 
-			const shopBg = scene.add.image(400, 300, 'gal1').setDisplaySize(800, 600).setAlpha(0.2);
-			const uiBg = scene.add.rectangle(400, 300, 760, 560, 0x001122, 0.8).setStrokeStyle(4, 0x00ffff);
+			const uiBg = scene.add.rectangle(400, 300, 760, 560, 0x001122, 0.82).setStrokeStyle(2, 0x00c8ff);
 			const shopTitle = scene.add.text(400, 60, 'TERMINAL DE SUMINISTROS', {
-				fontFamily: 'monospace', fontSize: 32, color: '#0ff', fontStyle: 'bold', stroke: '#0055ff', strokeThickness: 4,
-				shadow: { offsetX: 0, offsetY: 0, color: '#0ff', blur: 10, stroke: true, fill: true }
+				fontFamily: 'monospace', fontSize: 32, color: '#0ff', fontStyle: 'bold'
 			}).setOrigin(0.5);
 
 			scene.shopCredits = scene.add.text(50, 45, 'CRÉDITOS: ' + scene.playerState.credits + ' 💎 | CICLO: ' + (scene.gameFlow.cycle || 1), {
-				fontFamily: 'monospace', fontSize: 18, color: '#ffea00', fontStyle: 'bold', stroke: '#000', strokeThickness: 2
+				fontFamily: 'monospace', fontSize: 18, color: '#ffea00', fontStyle: 'bold'
 			});
-			scene.shopItems.push(shopBg, uiBg, shopTitle, scene.shopCredits);
+			scene.shopItems.push(uiBg, shopTitle, scene.shopCredits);
 
 			const createLabel = (x, y, text, color) => {
 				const lbl = scene.add.text(x, y, text, {
-					fontFamily: 'monospace', fontSize: 20, color: color, fontStyle: 'bold', stroke: '#000', strokeThickness: 4,
-					shadow: { offsetX: 2, offsetY: 2, color: '#000', blur: 2, fill: true }
+					fontFamily: 'monospace', fontSize: 20, color: color, fontStyle: 'bold'
 				}).setOrigin(0.5);
-				const line = scene.add.rectangle(x, y + 15, 240, 2, parseInt(color.replace('#', '0x'), 16));
-				scene.shopItems.push(lbl, line);
+				scene.shopItems.push(lbl);
 			};
 
 			createLabel(220, 130, '▶ ARMAS', '#ffaa00');
@@ -1521,17 +1749,14 @@ function create() {
 				previewText = 'BOSS DETECTADO: ' + BOSS_NAMES[scene.gameFlow.bossType];
 			}
 
-			const enemiesText = scene.add.text(400, 515, '⚠ ' + previewText, {
-				fontFamily: 'monospace', fontSize: 14, color: '#ff3333', align: 'center', backgroundColor: '#220000', padding: { x: 15, y: 8 }, stroke: '#ff0000', strokeThickness: 1
+			const enemiesText = scene.add.text(400, 515, previewText, {
+				fontFamily: 'monospace', fontSize: 14, color: '#ff6666', align: 'center'
 			}).setOrigin(0.5);
 
 			const btnLabel = nextStep === 'phase1' ? 'INICIAR FASE 1 >>' : (nextStep === 'phase2' ? 'INICIAR FASE 2 >>' : 'INICIAR BOSS >>');
-			const nextBtnBg = scene.add.rectangle(400, 650, 250, 45, 0x880000).setStrokeStyle(2, 0xff0000).setInteractive({ useHandCursor: true });
-			const nextBtnTxt = scene.add.text(400, 650, btnLabel, { fontFamily: 'monospace', fontSize: 18, color: '#fff', fontStyle: 'bold' }).setOrigin(0.5);
-			nextBtnBg.on('pointerover', () => { nextBtnBg.setFillStyle(0xff0000); nextBtnTxt.setTint(0xffff00); });
-			nextBtnBg.on('pointerout', () => { nextBtnBg.setFillStyle(0x880000); nextBtnTxt.clearTint(); });
+			const nextBtnBg = scene.add.rectangle(400, 560, 250, 45, 0x880000).setStrokeStyle(2, 0xff0000).setInteractive({ useHandCursor: true });
+			const nextBtnTxt = scene.add.text(400, 560, btnLabel, { fontFamily: 'monospace', fontSize: 18, color: '#fff', fontStyle: 'bold' }).setOrigin(0.5);
 			nextBtnBg.on('pointerdown', () => scene.startStep());
-			scene.tweens.add({ targets: [nextBtnBg, nextBtnTxt], y: 560, duration: 650, ease: 'Power2' });
 
 			scene.shopItems.push(enemiesText, nextBtnBg, nextBtnTxt);
 		};
@@ -1832,6 +2057,7 @@ function update(time, delta) {
 			}
 			if (enemy.isBoss) updateBossAI(this, enemy, time, delta);
 			else updateEnemyAI(this, enemy, time, delta);
+			if (!enemy.isBoss) updateEnemyVisuals(this, enemy, time);
 			clampEnemyToArena(enemy);
 		});
 	}
