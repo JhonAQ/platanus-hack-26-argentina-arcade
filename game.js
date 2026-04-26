@@ -68,6 +68,8 @@ const BOSS_NAMES = {
 	chaosArchitect: 'ARQUITECTO DEL CAOS'
 };
 
+const DEFEAT_REWARD = 120;
+
 const ENEMY_STATS = {
 	swiftProbe: { hp: 45, speed: 205, damage: 10, color: 0xff5e7e, w: 26, h: 20 },
 	heavyGunner: { hp: 160, speed: 75, damage: 13, color: 0xb8a37d, w: 42, h: 34 },
@@ -253,6 +255,48 @@ function consumeProjectile(scene, proj) {
 	proj.destroy();
 }
 
+function spawnWeaponFlash(scene, x, y, color, size, duration) {
+	if (!scene) return;
+	const flash = scene.add.circle(x, y, size || 12, color || 0xffffff, 0.45).setDepth(130);
+	scene.tweens.add({
+		targets: flash,
+		scale: 2.1,
+		alpha: 0,
+		duration: duration || 120,
+		ease: 'Quad.easeOut',
+		onComplete: () => { if (flash && flash.active) flash.destroy(); }
+	});
+}
+
+function spawnWeaponImpact(scene, x, y, color, size) {
+	if (!scene) return;
+	const c = color || 0xffffff;
+	const s = size || 14;
+	const ring = scene.add.circle(x, y, s * 0.35, c, 0.35).setDepth(132);
+	scene.tweens.add({
+		targets: ring,
+		scale: 2.5,
+		alpha: 0,
+		duration: 140,
+		ease: 'Quad.easeOut',
+		onComplete: () => { if (ring && ring.active) ring.destroy(); }
+	});
+	for (let i = 0; i < 4; i++) {
+		const a = (Math.PI * 2 * i / 4) + Phaser.Math.FloatBetween(-0.22, 0.22);
+		const shard = scene.add.rectangle(x, y, 5, 2, c, 1).setDepth(133);
+		shard.rotation = a;
+		scene.tweens.add({
+			targets: shard,
+			x: x + Math.cos(a) * Phaser.Math.Between(s, s + 14),
+			y: y + Math.sin(a) * Phaser.Math.Between(s, s + 14),
+			alpha: 0,
+			duration: 130,
+			ease: 'Cubic.easeOut',
+			onComplete: () => { if (shard && shard.active) shard.destroy(); }
+		});
+	}
+}
+
 function applyKnockback(body, fromX, fromY, strength, verticalBoost) {
 	if (!body) return;
 	const dx = body.x - fromX;
@@ -271,6 +315,7 @@ function attachProceduralBlockColliders(scene, block) {
 	scene.physics.add.collider(scene.projectiles, block, (proj, hitBlock) => {
 		if (!proj || !proj.active || proj._consumed || !hitBlock || !hitBlock.active) return;
 		proj._consumed = true;
+		spawnWeaponImpact(scene, proj.x, proj.y, proj.hitColor || proj.fillColor || 0xffe49a, 11);
 		const dmg = typeof proj.blockDamage === 'number' ? proj.blockDamage : Math.max(3, Math.round((proj.baseDamage || 10) * 0.45));
 		damageProceduralBlock(scene, hitBlock, dmg);
 		consumeProjectile(scene, proj);
@@ -1137,7 +1182,9 @@ function create() {
 			lastBody2Time: 0,
 			lastWeapon1Time: 0,
 			lastWeapon2Time: 0,
+			lastDashTime: 0,
 			invulnUntil: 0,
+			hasDash: false,
 			hp: 100,
 			maxHp: 100,
 			credits: 1500
@@ -1146,12 +1193,19 @@ function create() {
 		scene.hpBarBg = scene.add.rectangle(400, 60, 304, 24, 0x550000).setOrigin(0.5, 0.5).setDepth(100);
 		scene.hpBar = scene.add.rectangle(250, 60, 300, 20, 0x00ff00).setOrigin(0, 0.5).setDepth(101);
 		scene.hpText = scene.add.text(400, 60, 'HP: 100/100', { fontFamily: 'monospace', fontSize: 16, color: '#fff', fontStyle: 'bold' }).setOrigin(0.5, 0.5).setDepth(102);
+		scene.creditsHudText = scene.add.text(790, 60, '', {
+			fontFamily: 'monospace', fontSize: 16, color: '#ffea00', fontStyle: 'bold', backgroundColor: '#1f1600', padding: { x: 8, y: 4 }
+		}).setOrigin(1, 0.5).setDepth(102);
 
 		scene.objectiveText = scene.add.text(400, 95, '', {
 			fontFamily: 'monospace', fontSize: 14, color: '#9eefff', backgroundColor: '#001318', padding: { x: 10, y: 6 }
 		}).setOrigin(0.5).setDepth(102);
 
-		scene.combatUi = [scene.player, scene.floor, scene.hpBarBg, scene.hpBar, scene.hpText, scene.objectiveText];
+		scene.rewardText = scene.add.text(400, 125, '', {
+			fontFamily: 'monospace', fontSize: 14, color: '#ffe066', backgroundColor: '#2c2100', padding: { x: 10, y: 6 }, fontStyle: 'bold'
+		}).setOrigin(0.5).setDepth(102).setVisible(false);
+
+		scene.combatUi = [scene.player, scene.floor, scene.hpBarBg, scene.hpBar, scene.hpText, scene.creditsHudText, scene.objectiveText, scene.rewardText];
 
 		scene.projectiles = scene.physics.add.group();
 		scene.enemies = scene.physics.add.group();
@@ -1163,6 +1217,25 @@ function create() {
 			scene.hpBar.width = (scene.playerState.hp / scene.playerState.maxHp) * 300;
 			scene.hpText.setText('HP: ' + scene.playerState.hp + '/' + scene.playerState.maxHp);
 			scene.hpBar.fillColor = scene.playerState.hp <= 25 ? 0xff0000 : (scene.playerState.hp <= 50 ? 0xffff00 : 0x00ff00);
+		};
+
+		scene.updateCreditsHud = () => {
+			if (!scene.creditsHudText) return;
+			scene.creditsHudText.setText('CREDITOS: ' + scene.playerState.credits + ' 💎');
+		};
+		scene.updateCreditsHud();
+
+		scene.showDefeatReward = (amount) => {
+			scene.playerState.credits += amount;
+			scene.updateCreditsHud();
+			if (scene.rewardText) {
+				scene.rewardText.setText('RECOMPENSA +' + amount + ' 💎 | TOTAL: ' + scene.playerState.credits + ' 💎');
+				scene.rewardText.setVisible(true);
+				if (scene.rewardTextTimer) scene.rewardTextTimer.remove(false);
+				scene.rewardTextTimer = scene.time.delayedCall(1100, () => {
+					if (scene.rewardText && scene.rewardText.active) scene.rewardText.setVisible(false);
+				});
+			}
 		};
 
 		scene.damagePlayerDirect = (incoming) => {
@@ -1198,6 +1271,7 @@ function create() {
 			if (!enemy) return;
 			const wasBoss = !!enemy.isBoss;
 			destroyEnemy(enemy);
+			scene.showDefeatReward(DEFEAT_REWARD);
 			if (wasBoss) {
 				window._combatActive = false;
 				setMusicMode('victory');
@@ -1249,6 +1323,7 @@ function create() {
 
 		scene.physics.add.overlap(scene.projectiles, scene.enemies, (proj, enemy) => {
 			if (!proj || !proj.active || proj._consumed || !enemy || !enemy.active) return;
+			spawnWeaponImpact(scene, proj.x, proj.y, proj.hitColor || proj.fillColor || 0xfff166, 13);
 			consumeProjectile(scene, proj);
 			const baseDamage = proj.baseDamage || 10;
 			scene.damageEnemy(enemy, baseDamage * scene.playerState.damageLevel, proj.x, proj.y);
@@ -1284,7 +1359,12 @@ function create() {
 			scene.enemyProjectiles.clear(true, true);
 			scene.hazards.clear(true, true);
 			clearProceduralLevel(scene);
-			if (scene.debugText) scene.debugText.setText('');
+			if (scene.rewardText) scene.rewardText.setVisible(false);
+		};
+
+		scene.getTargetKillsForLevel = (levelNumber, step) => {
+			const phaseBase = step === 'phase1' ? 3 : 5;
+			return phaseBase + Math.max(0, (levelNumber - 1) * 2);
 		};
 
 		scene.startStep = () => {
@@ -1293,6 +1373,7 @@ function create() {
 			const step = scene.gameFlow.steps[scene.gameFlow.stepIndex];
 			window._combatActive = true;
 			scene.combatUi.forEach((item) => { if (item && item.setVisible) item.setVisible(true); });
+			scene.updateCreditsHud();
 			scene.player.setPosition(400, 300);
 			scene.player.body.setVelocity(0, 0);
 
@@ -1303,12 +1384,13 @@ function create() {
 					const cycle = scene.gameFlow.cycle || 1;
 					const levelNumber = ((cycle - 1) * 2) + (step === 'phase1' ? 1 : 2);
 					const phaseMaxEnemies = 3 + levelNumber;
+					const targetKills = scene.getTargetKillsForLevel(levelNumber, step);
 				scene.runState = {
 					kind: 'phase',
 					phaseId: step,
 						levelNumber,
 					kills: 0,
-					targetKills: step === 'phase1' ? 18 : 26
+					targetKills
 				};
 					initLevel1EnemySystem(scene, scene.time.now, pool, phaseMaxEnemies, step === 'phase1' ? 450 : 320, step === 'phase1' ? 900 : 700);
 					scene.objectiveText.setText('NIVEL ' + levelNumber + ' (FASE ' + (step === 'phase1' ? '1' : '2') + ') - Eliminaciones: 0/' + scene.runState.targetKills);
@@ -1322,18 +1404,38 @@ function create() {
 			spawnBoss(scene, scene.gameFlow.bossType);
 		};
 
-		scene.createShopBtn = (x, y, text, color, price, onBuy) => {
+		scene.createShopBtn = (x, y, getText, color, getPrice, onBuy) => {
 			const container = scene.add.container(x, y);
 			const bg = scene.add.rectangle(0, 0, 280, 40, color, 0.6).setStrokeStyle(2, color).setInteractive({ useHandCursor: true });
-			const txt = scene.add.text(-125, -10, text, { fontFamily: 'monospace', fontSize: 15, color: '#fff', fontStyle: 'bold' });
-			const prc = scene.add.text(75, -10, price + '💎', { fontFamily: 'monospace', fontSize: 15, color: '#ffea00', fontStyle: 'bold' });
+			const resolveText = () => {
+				if (typeof getText === 'function') return getText();
+				return getText;
+			};
+			const txt = scene.add.text(-125, -10, '', { fontFamily: 'monospace', fontSize: 15, color: '#fff', fontStyle: 'bold' });
+			const resolvePrice = () => {
+				if (typeof getPrice === 'function') return getPrice();
+				return getPrice;
+			};
+			const prc = scene.add.text(75, -10, '', { fontFamily: 'monospace', fontSize: 15, color: '#ffea00', fontStyle: 'bold' });
+			const refreshText = () => {
+				txt.setText(resolveText());
+			};
+			const refreshPrice = () => {
+				prc.setText(resolvePrice() + '💎');
+			};
+			refreshText();
+			refreshPrice();
 			container.add([bg, txt, prc]);
 			bg.on('pointerover', () => { bg.setFillStyle(color, 1); txt.setTint(0xffff00); });
 			bg.on('pointerout', () => { bg.setFillStyle(color, 0.6); txt.clearTint(); });
 			bg.on('pointerdown', () => {
+				const price = resolvePrice();
 				if (scene.playerState.credits < price) return;
+				if (onBuy && onBuy(price) === false) return;
 				scene.playerState.credits -= price;
-				onBuy && onBuy();
+				scene.updateCreditsHud();
+				refreshText();
+				refreshPrice();
 				if (scene.shopCredits) scene.shopCredits.setText('CRÉDITOS: ' + scene.playerState.credits + ' 💎');
 			});
 			scene.shopItems.push(container);
@@ -1371,37 +1473,45 @@ function create() {
 				scene.shopItems.push(lbl, line);
 			};
 
-			createLabel(220, 130, '▶ MEJORAS', '#ffaa00');
-			scene.createShopBtn(220, 175, 'Cañón Nexo (Distancia)', 0x664400, 300, () => {
+			createLabel(220, 130, '▶ ARMAS', '#ffaa00');
+			scene.createShopBtn(220, 190, () => 'Distancia A  LV ' + scene.playerState.weapon1Level, 0x664400, () => 50 + scene.playerState.weapon1Level, () => {
 				scene.playerState.weapon1Level++;
+			});
+			scene.createShopBtn(220, 250, () => 'Distancia B  LV ' + scene.playerState.weapon2Level, 0x664400, () => 50 + scene.playerState.weapon2Level, () => {
 				scene.playerState.weapon2Level++;
 			});
-			scene.createShopBtn(220, 225, 'Filo Plasma (Cuerpo)', 0x664400, 280, () => {
+			scene.createShopBtn(220, 310, () => 'Cuerpo A  LV ' + scene.playerState.body1Level, 0x664400, () => 50 + scene.playerState.body1Level, () => {
 				scene.playerState.body1Level++;
+			});
+			scene.createShopBtn(220, 370, () => 'Cuerpo B  LV ' + scene.playerState.body2Level, 0x664400, () => 50 + scene.playerState.body2Level, () => {
 				scene.playerState.body2Level++;
 			});
 
-			createLabel(580, 130, '▶ BUFFS', '#00ff00');
-			scene.createShopBtn(580, 175, '+ Daño', 0x004400, 220 + (scene.playerState.damageLevel * 30), () => { scene.playerState.damageLevel++; });
-			scene.createShopBtn(580, 225, '+ Defensa', 0x004400, 200 + (scene.playerState.defenseLevel * 28), () => { scene.playerState.defenseLevel++; });
-			scene.createShopBtn(580, 275, '+ Velocidad', 0x004400, 180 + (scene.playerState.speedLevel * 25), () => { scene.playerState.speedLevel++; });
-			scene.createShopBtn(580, 325, '+ Estabilidad', 0x004400, 170 + (scene.playerState.stabilityLevel * 25), () => { scene.playerState.stabilityLevel++; });
-
-			createLabel(220, 290, '▶ CONSUMIBLES', '#ff00ff');
-			scene.createShopBtn(220, 335, 'Curación', 0x440044, 120, () => {
-				scene.playerState.hp = Math.min(scene.playerState.maxHp, scene.playerState.hp + 40);
-				scene.updateHpUi();
-			});
-			scene.createShopBtn(220, 385, 'Granada PEM', 0x440044, 170, () => {
+			createLabel(580, 130, '▶ ATRIBUTOS', '#00c8ff');
+			scene.createShopBtn(580, 190, () => 'Danio  LV ' + scene.playerState.damageLevel, 0x3e5d00, () => 40, () => {
 				scene.playerState.damageLevel++;
 			});
-			scene.createShopBtn(220, 435, 'Sobrecarga', 0x440044, 210, () => {
-				scene.playerState.lastHurtTime = scene.time.now + 2400;
+			scene.createShopBtn(580, 250, () => 'Defensa  LV ' + scene.playerState.defenseLevel, 0x3e5d00, () => 40, () => {
+				scene.playerState.defenseLevel++;
+			});
+			scene.createShopBtn(580, 310, () => 'Velocidad  LV ' + scene.playerState.speedLevel, 0x004a5d, () => 40, () => {
+				scene.playerState.speedLevel++;
+			});
+			scene.createShopBtn(580, 370, () => 'Estabilidad  LV ' + scene.playerState.stabilityLevel, 0x004a5d, () => 40, () => {
+				scene.playerState.stabilityLevel++;
 			});
 
-			createLabel(580, 390, '▶ HERRAMIENTAS', '#00ffff');
-			scene.createShopBtn(580, 435, 'Dron Soporte', 0x004444, 650, () => { scene.playerState.weapon2Level += 2; });
-			scene.createShopBtn(580, 485, 'Botas Magnéticas', 0x004444, 420, () => { scene.playerState.speedLevel += 1; scene.playerState.stabilityLevel += 1; });
+			createLabel(220, 430, '▶ CONSUMIR', '#ff77aa');
+			scene.createShopBtn(220, 480, () => 'Vida  (cura total)', 0x5d0030, () => 500, () => {
+				scene.playerState.hp = scene.playerState.maxHp;
+				scene.updateHpUi();
+			});
+
+			createLabel(580, 430, '▶ EQUIPAMIENTO', '#9aff5e');
+			scene.createShopBtn(580, 480, () => scene.playerState.hasDash ? 'Dash (O)  ADQUIRIDO' : 'Dash (O)  DESBLOQUEAR', 0x2f5d00, () => scene.playerState.hasDash ? 0 : 1000, () => {
+				if (scene.playerState.hasDash) return false;
+				scene.playerState.hasDash = true;
+			});
 
 			let previewText = '';
 			if (nextStep === 'phase1' || nextStep === 'phase2') {
@@ -1462,6 +1572,17 @@ function update(time, delta) {
 		this.player.body.setVelocityX(0);
 	}
 
+	if (this.playerState.hasDash && held.P1_3 && time > this.playerState.lastDashTime + 520) {
+		this.playerState.lastDashTime = time;
+		let dx = 0;
+		if (held.P1_L && !held.P1_R) dx = -1;
+		else if (held.P1_R && !held.P1_L) dx = 1;
+		else dx = this.playerState.facingRight ? 1 : -1;
+		this.player.body.setVelocity(dx * 8000, this.player.body.velocity.y);
+		this.playerState.invulnUntil = Math.max(this.playerState.invulnUntil || 0, time + 170);
+		spawnWeaponFlash(this, this.player.x + (dx * 10), this.player.y, 0x9aff5e, 14, 100);
+	}
+
 	// Jumping (ONLY W/P1_U)
 	if (held.P1_U && this.player.body.touching.down) {
 		this.player.body.setVelocityY(jumpPower);
@@ -1474,12 +1595,16 @@ function update(time, delta) {
 		this.playerState.lastBody1Time = time;
 		if (this.playWeaponSfx) this.playWeaponSfx('body1');
 		const radius = Math.min(36 + (this.playerState.body1Level * 3.6), 410);
-		const areaFx = this.add.circle(this.player.x, this.player.y, radius, 0xff4a66, 0.16).setStrokeStyle(2, 0xff8c9d, 0.85).setDepth(150);
-		this.tweens.add({ targets: areaFx, alpha: 0, duration: 110, onComplete: () => areaFx.destroy() });
+		spawnWeaponFlash(this, this.player.x, this.player.y, 0xff5f7a, 13, 110);
+		const areaFx = this.add.circle(this.player.x, this.player.y, radius, 0xff4a66, 0.13).setStrokeStyle(2, 0xff8c9d, 0.85).setDepth(150);
+		const areaFx2 = this.add.circle(this.player.x, this.player.y, Math.max(18, radius * 0.66), 0xff8aa0, 0.10).setStrokeStyle(1, 0xffc3cf, 0.7).setDepth(149);
+		this.tweens.add({ targets: areaFx, alpha: 0, duration: 125, onComplete: () => areaFx.destroy() });
+		this.tweens.add({ targets: areaFx2, alpha: 0, duration: 95, onComplete: () => areaFx2.destroy() });
 		this.enemies.getChildren().forEach((enemy) => {
 			if (!enemy || !enemy.active) return;
 			const d = Phaser.Math.Distance.Between(this.player.x, this.player.y, enemy.x, enemy.y);
 			if (d <= radius) {
+				spawnWeaponImpact(this, enemy.x, enemy.y, 0xff8fa5, 10);
 				this.damageEnemy(enemy, 16 * this.playerState.damageLevel);
 				if (enemy.body) {
 					const dir = new Phaser.Math.Vector2(enemy.x - this.player.x, enemy.y - this.player.y).normalize();
@@ -1490,15 +1615,26 @@ function update(time, delta) {
 		});
 	}
 
-	// Cuerpo 2 (i): short chained ray. Level only increases chain count.
-	if (held.P1_2 && time > this.playerState.lastBody2Time + 520) {
+	// Cuerpo 2 (i): chained beam with 8-direction aim, continuous while held.
+	const body2Tick = 80;
+	if (held.P1_2 && time > this.playerState.lastBody2Time + body2Tick) {
 		this.playerState.lastBody2Time = time;
 		if (this.playWeaponSfx) this.playWeaponSfx('body2');
+		const inputX = (held.P1_R ? 1 : 0) - (held.P1_L ? 1 : 0);
+		const inputY = (held.P1_D ? 1 : 0) - (held.P1_U ? 1 : 0);
+		let aimX = inputX;
+		let aimY = inputY;
+		if (aimX === 0 && aimY === 0) {
+			aimX = this.playerState.facingRight ? 1 : -1;
+		}
+		const aimLen = Math.max(0.001, Math.sqrt((aimX * aimX) + (aimY * aimY)));
+		const dirX = aimX / aimLen;
+		const dirY = aimY / aimLen;
+		spawnWeaponFlash(this, this.player.x + (dirX * 10), this.player.y + (dirY * 10), 0x93f5ff, 11, 90);
 		const chainCount = Math.max(1, this.playerState.body2Level);
-		const dirX = this.playerState.facingRight ? 1 : -1;
-		const dirY = 0;
-		const beamLen = 220;
-		const beamHalfWidth = 24;
+		const beamLen = Math.min(95 + (this.playerState.body2Level * 8), 180);
+		const beamHalfWidth = Math.min(18 + (this.playerState.body2Level * 1.1), 30);
+		const chainRange = Math.min(120 + (this.playerState.body2Level * 16), 320);
 		let first = null;
 		let bestProj = Infinity;
 		this.enemies.getChildren().forEach((enemy) => {
@@ -1515,48 +1651,94 @@ function update(time, delta) {
 			}
 		});
 
-		const rayFx = this.add.graphics().setDepth(151);
-		rayFx.lineStyle(4, 0x8ef8ff, 0.95);
-		rayFx.beginPath();
-		rayFx.moveTo(this.player.x, this.player.y);
+		const points = [{ x: this.player.x, y: this.player.y }];
 		if (first) {
 			const hitSet = new Set();
 			let current = first;
 			let fromX = this.player.x;
 			let fromY = this.player.y;
 			for (let hop = 0; hop < chainCount && current; hop++) {
-				rayFx.lineTo(current.x, current.y);
+				points.push({ x: current.x, y: current.y });
+				spawnWeaponImpact(this, current.x, current.y, 0x9fffff, 9);
 				this.damageEnemy(current, 22 * this.playerState.damageLevel);
 				hitSet.add(current);
 				fromX = current.x;
 				fromY = current.y;
-				current = findClosestEnemy(this, fromX, fromY, 180, null, hitSet);
+				current = findClosestEnemy(this, fromX, fromY, chainRange, null, hitSet);
 			}
 		} else {
-			rayFx.lineTo(this.player.x + (dirX * beamLen), this.player.y);
+			const endX = this.player.x + (dirX * beamLen);
+			const endY = this.player.y + (dirY * beamLen);
+			points.push({ x: endX, y: endY });
+			spawnWeaponImpact(this, endX, endY, 0x9fffff, 7);
 		}
-		rayFx.strokePath();
-		this.time.delayedCall(95, () => { if (rayFx && rayFx.active) rayFx.destroy(); });
+
+		const rayFx = this.add.graphics().setDepth(151);
+		const drawBeamProgress = (progress) => {
+			rayFx.clear();
+			rayFx.lineStyle(6, 0x1a8fa8, 0.55);
+			rayFx.beginPath();
+			rayFx.moveTo(points[0].x, points[0].y);
+			rayFx.lineStyle(3, 0x8ef8ff, 1);
+			rayFx.beginPath();
+			rayFx.moveTo(points[0].x, points[0].y);
+			if (points.length <= 1) return;
+			const segCount = points.length - 1;
+			const scaled = Math.max(0, Math.min(1, progress)) * segCount;
+			const fullSegs = Math.floor(scaled);
+			for (let i = 0; i < fullSegs; i++) {
+				rayFx.lineTo(points[i + 1].x, points[i + 1].y);
+			}
+			const partial = scaled - fullSegs;
+			if (fullSegs < segCount && partial > 0) {
+				const a = points[fullSegs];
+				const b = points[fullSegs + 1];
+				rayFx.lineTo(a.x + ((b.x - a.x) * partial), a.y + ((b.y - a.y) * partial));
+			}
+			rayFx.strokePath();
+		};
+
+		drawBeamProgress(0);
+		this.tweens.add({
+			targets: { p: 0 },
+			p: 1,
+			duration: 70,
+			ease: 'Sine.out',
+			onUpdate: (tw) => drawBeamProgress(tw.targets[0].p)
+		});
+		this.tweens.add({
+			targets: rayFx,
+			alpha: { from: 1, to: 0 },
+			duration: 130,
+			ease: 'Quad.easeOut',
+			onComplete: () => { if (rayFx && rayFx.active) rayFx.destroy(); }
+		});
 	}
 
 	// Arma 1 (j): circular burst from player. Level only changes projectile count.
 	if (held.P1_4 && time > this.playerState.lastWeapon1Time + 250) {
 		this.playerState.lastWeapon1Time = time;
 		if (this.playWeaponSfx) this.playWeaponSfx('weapon1');
+		spawnWeaponFlash(this, this.player.x, this.player.y, 0xffe47a, 12, 105);
 		const count = Math.max(1, this.playerState.weapon1Level);
 		const baseAngle = this.playerState.facingRight ? 0 : Math.PI;
-		const speedW1 = 360;
+		const speedW1 = 300;
 		for (let i = 0; i < count; i++) {
 			const angle = baseAngle + ((Math.PI * 2) * i / count);
-			const bullet = this.add.rectangle(this.player.x + Math.cos(angle) * 14, this.player.y + Math.sin(angle) * 14, 8, 8, 0xfff166).setDepth(120);
+			const bullet = this.add.rectangle(this.player.x + Math.cos(angle) * 14, this.player.y + Math.sin(angle) * 14, 10, 6, 0xfff166).setDepth(120);
 			this.physics.add.existing(bullet);
 			this.projectiles.add(bullet);
 			bullet.body.setAllowGravity(false);
 			bullet.body.setVelocity(Math.cos(angle) * speedW1, Math.sin(angle) * speedW1);
+			bullet.rotation = angle;
 			bullet.baseDamage = 10;
 			bullet.blockDamage = 5;
+			bullet.hitColor = 0xffe88a;
+			bullet.trailColor = 0xfff4b0;
+			bullet.trailInterval = 40;
+			bullet.nextTrailAt = time;
 			bullet._consumed = false;
-			this.time.delayedCall(1500, () => { if (bullet.active) bullet.destroy(); });
+			this.time.delayedCall(950, () => { if (bullet.active) bullet.destroy(); });
 		}
 	}
 
@@ -1568,11 +1750,16 @@ function update(time, delta) {
 		const speedW2 = 190 + (this.playerState.weapon2Level * 14);
 		const target = findClosestEnemy(this, this.player.x, this.player.y, 420, null, null);
 		const bullet = this.add.rectangle(this.player.x, this.player.y, 10, 10, 0x7bfffb).setDepth(121);
+		spawnWeaponFlash(this, this.player.x, this.player.y, 0x8ffeff, 10, 95);
 		this.physics.add.existing(bullet);
 		this.projectiles.add(bullet);
 		bullet.body.setAllowGravity(false);
 		bullet.baseDamage = 9;
 		bullet.blockDamage = 4;
+		bullet.hitColor = 0x8ffeff;
+		bullet.trailColor = 0x88fff5;
+		bullet.trailInterval = 28;
+		bullet.nextTrailAt = time;
 		bullet.homing = true;
 		bullet.homingSpeed = speedW2;
 		bullet.turnRate = Math.min(0.12 + (this.playerState.weapon2Level * 0.003), 0.35);
@@ -1590,6 +1777,11 @@ function update(time, delta) {
 	// Cleanup off-screen projectiles
 	this.projectiles.getChildren().forEach(p => {
 		if (!p || !p.active || p._consumed) return;
+		if (p.trailColor && time >= (p.nextTrailAt || 0)) {
+			const t = this.add.circle(p.x, p.y, p.homing ? 4 : 3, p.trailColor, p.homing ? 0.34 : 0.26).setDepth(110);
+			this.tweens.add({ targets: t, alpha: 0, scale: 0.3, duration: p.homing ? 160 : 120, onComplete: () => t.destroy() });
+			p.nextTrailAt = time + (p.trailInterval || 40);
+		}
 		if (this.levelBlocks && this.levelBlocks.length) {
 			const pb = p.getBounds();
 			for (const block of this.levelBlocks) {
@@ -1597,6 +1789,7 @@ function update(time, delta) {
 				if (Phaser.Geom.Intersects.RectangleToRectangle(pb, block.getBounds())) {
 					const blockDamage = typeof p.blockDamage === 'number' ? p.blockDamage : Math.max(3, Math.round((p.baseDamage || 10) * 0.45));
 					p._consumed = true;
+					spawnWeaponImpact(this, p.x, p.y, p.hitColor || p.fillColor || 0xfff166, 10);
 					damageProceduralBlock(this, block, blockDamage);
 					consumeProjectile(this, p);
 					return;
@@ -1618,12 +1811,6 @@ function update(time, delta) {
 
 	// Enemy spawning (waves that always include all 7 archetypes in random order)
 	if (this.enemies && this.runState && this.runState.kind === 'phase') {
-		if (!this.debugText) {
-			this.debugText = this.add.text(10, 50, '', { fill: '#fff', fontSize: 16, backgroundColor: '#000' });
-			this.debugText.setDepth(200); // Ensure it's on top
-		}
-		this.debugText.setText('Enemies: ' + this.enemies.getChildren().length + ' | Wave: ' + this.enemyWave);
-
 		if (time > this.nextEnemySpawnAt && this.enemies.getChildren().length < this.maxEnemies) {
 			if (!this.levelSpawnQueue || this.levelSpawnQueue.length === 0) {
 				refillEnemyQueue(this);
