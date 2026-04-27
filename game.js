@@ -23,8 +23,8 @@ const HT = LT + 4 * LH + 8;
 // Physics
 const STOCKS = 3,
   INVT = 2200;
-const JV = -300,
-  GR = 920;
+const JV = -500,
+  GR = 1200;
 const BSP = 200,
   MSP = 460,
   SPI = 4,
@@ -39,8 +39,6 @@ const EVENTS = [
   "WIND STORM",
 ];
 const EV_COLS = [0x9944ff, 0xff4444, 0x2244aa, 0xff6600, 0x22aaaa];
-const AI_R = [230, 195],
-  AI_D = [0.88, 0.8];
 const OBGAP = 260;
 
 // ─── Chrome Dino Bitmap Data ───────────────────────────
@@ -1533,36 +1531,45 @@ function doJump(sc, p) {
 
 // ─── AI ────────────────────────────────────────────────
 function updateAI(sc, time) {
+  const jumpVel = sc.st.curEvt === "LOW GRAVITY" ? Math.abs(JV * 1.2) : Math.abs(JV);
+  const grav = sc.st.curEvt === "LOW GRAVITY" ? GR * 0.4 : GR;
+  const idealDist = (jumpVel / grav) * sc.st.spd;
+
   for (let i = 0; i < 4; i++) {
     const p = sc.st.players[i];
     if (!p.isAI || !p.alive || p.jumping) continue;
     if (time < p.aiNext) continue;
-    const ai = Math.min(i - 1, 1); // index for AI params (0 or 1)
-    const react = AI_R[ai < 0 ? 0 : ai] + Math.random() * 40 - 20;
+
     let jump = false;
+    // Calculate a safer reaction distance dependent on speed
+    // 0.75 * idealDist ensures we jump much closer to the obstacle
+    // + 18 adds a minor buffer so we don't jump too late at low speeds
+    const react = idealDist * 0.75 + 18; 
 
     for (const o of sc.st.obs) {
       if (o.lane !== p.lane) continue;
       const dx = o.x - DX;
+      // Jump if obstacle is getting close
       if (dx > 0 && dx < react) {
-        jump = Math.random() < AI_D[ai < 0 ? 0 : ai];
+        jump = Math.random() < 0.98;
         break;
       }
     }
-    if (!jump)
+    if (!jump) {
       for (const m of sc.st.meteors) {
         if (
           Math.abs(m.y - p.groundY) < 50 &&
           m.x - DX > 0 &&
-          m.x - DX < react * 0.7
+          m.x - DX < react * 0.85
         ) {
-          jump = Math.random() < AI_D[ai < 0 ? 0 : ai];
+          jump = Math.random() < 0.98;
           break;
         }
       }
+    }
 
     if (jump) doJump(sc, p);
-    p.aiNext = time + 90 + Math.random() * 80;
+    p.aiNext = time + 20 + Math.random() * 20; // Extremely fast checks for precision
   }
 }
 
@@ -1579,8 +1586,8 @@ function updatePhys(sc, dt, time) {
       p.y += p.vy * dt;
       // Clamp: don't cross into lane above
       const minY = LT + p.lane * LH + 12;
-      if (p.y < minY + 39) {
-        p.y = minY + 39;
+      if (p.y < minY + 15) {
+        p.y = minY + 15;
         if (p.vy < 0) p.vy = 0;
       }
       if (p.y >= p.groundY) {
@@ -1627,24 +1634,27 @@ function spawnObs(sc, time) {
     if (close) continue;
 
     const r = Math.random();
-    let tex, ow, oh;
+    let tex, ow, oh, scale;
     if (r < 0.4) {
       tex = "cs";
-      ow = 5 * S;
-      oh = 10 * S;
+      scale = 0.8;
+      ow = 5 * S * scale;
+      oh = 10 * S * scale;
     } else if (r < 0.75) {
       tex = "cl";
-      ow = 6 * S;
-      oh = 14 * S;
+      scale = 0.7;
+      ow = 6 * S * scale;
+      oh = 14 * S * scale;
     } else {
       tex = "cd";
-      ow = 10 * S;
-      oh = 10 * S;
+      scale = 0.75;
+      ow = 10 * S * scale;
+      oh = 10 * S * scale;
     }
 
     const gy = p.groundY;
     const ox = W + 20 + Math.random() * 60;
-    const spr = sc.add.sprite(ox, gy, tex).setOrigin(0.5, 1).setDepth(10);
+    const spr = sc.add.sprite(ox, gy, tex).setOrigin(0.5, 1).setDepth(10).setScale(scale);
     if (sc.st.curEvt === "NIGHT MODE") spr.setTint(0x88ff88);
 
     sc.st.obs.push({ lane: i, x: ox, y: gy, w: ow, h: oh, spd });
