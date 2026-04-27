@@ -861,9 +861,9 @@ function mkLobby(sc) {
         H - 12,
         "CUALQUIER BOTON PUEDE SER USADO POR CUALQUIER JUGADOR",
         {
-        fontFamily: '"Impact","Arial Black",sans-serif',
-        fontSize: "10px",
-        color: "#444",
+          fontFamily: '"Impact","Arial Black",sans-serif',
+          fontSize: "10px",
+          color: "#444",
         },
       )
       .setOrigin(0.5),
@@ -933,7 +933,9 @@ function showLobby(sc) {
 function updateLobby(sc, time) {
   let changed = false;
 
-  const ALL_BTNS = Object.keys(CABINET_KEYS).filter((k) => !k.startsWith("START"));
+  const ALL_BTNS = Object.keys(CABINET_KEYS).filter(
+    (k) => !k.startsWith("START"),
+  );
   for (const btn of ALL_BTNS) {
     if (sc.ctrl.pressed[btn]) {
       sc.ctrl.pressed[btn] = false;
@@ -1375,10 +1377,7 @@ function startGame(sc, time) {
     sc.shadows[i].setAlpha(0.25);
 
     for (let s = 0; s < STOCKS; s++)
-      sc.hud.icons[i][s]
-        .setVisible(true)
-        .setAlpha(1)
-        .setTint(PC[i]);
+      sc.hud.icons[i][s].setVisible(true).setAlpha(1).setTint(PC[i]);
 
     sc.hud.panels[i].pg.setAlpha(1);
     sc.hud.panels[i].hdr.setAlpha(1);
@@ -1531,7 +1530,8 @@ function doJump(sc, p) {
 
 // ─── AI ────────────────────────────────────────────────
 function updateAI(sc, time) {
-  const jumpVel = sc.st.curEvt === "LOW GRAVITY" ? Math.abs(JV * 1.2) : Math.abs(JV);
+  const jumpVel =
+    sc.st.curEvt === "LOW GRAVITY" ? Math.abs(JV * 1.2) : Math.abs(JV);
   const grav = sc.st.curEvt === "LOW GRAVITY" ? GR * 0.4 : GR;
   const idealDist = (jumpVel / grav) * sc.st.spd;
 
@@ -1544,7 +1544,7 @@ function updateAI(sc, time) {
     // Calculate a safer reaction distance dependent on speed
     // 0.75 * idealDist ensures we jump much closer to the obstacle
     // + 18 adds a minor buffer so we don't jump too late at low speeds
-    const react = idealDist * 0.75 + 18; 
+    const react = idealDist * 0.75 + 18;
 
     for (const o of sc.st.obs) {
       if (o.lane !== p.lane) continue;
@@ -1654,7 +1654,11 @@ function spawnObs(sc, time) {
 
     const gy = p.groundY;
     const ox = W + 20 + Math.random() * 60;
-    const spr = sc.add.sprite(ox, gy, tex).setOrigin(0.5, 1).setDepth(10).setScale(scale);
+    const spr = sc.add
+      .sprite(ox, gy, tex)
+      .setOrigin(0.5, 1)
+      .setDepth(10)
+      .setScale(scale);
     if (sc.st.curEvt === "NIGHT MODE") spr.setTint(0x88ff88);
 
     sc.st.obs.push({ lane: i, x: ox, y: gy, w: ow, h: oh, spd });
