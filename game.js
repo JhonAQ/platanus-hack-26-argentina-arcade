@@ -1530,28 +1530,21 @@ function doJump(sc, p) {
 
 // ─── AI ────────────────────────────────────────────────
 function updateAI(sc, time) {
-  const jumpVel =
-    sc.st.curEvt === "LOW GRAVITY" ? Math.abs(JV * 1.2) : Math.abs(JV);
-  const grav = sc.st.curEvt === "LOW GRAVITY" ? GR * 0.4 : GR;
-  const idealDist = (jumpVel / grav) * sc.st.spd;
-
   for (let i = 0; i < 4; i++) {
     const p = sc.st.players[i];
     if (!p.isAI || !p.alive || p.jumping) continue;
     if (time < p.aiNext) continue;
 
     let jump = false;
-    // Calculate a safer reaction distance dependent on speed
-    // 0.75 * idealDist ensures we jump much closer to the obstacle
-    // + 18 adds a minor buffer so we don't jump too late at low speeds
-    const react = idealDist * 0.75 + 18;
+    // Cálculo definitivo de apurar al máximo el salto:
+    // Salta exactamente en el borde del obstáculo basado en la velocidad actual
+    const react = 40 + (sc.st.spd * 0.15); 
 
     for (const o of sc.st.obs) {
       if (o.lane !== p.lane) continue;
       const dx = o.x - DX;
-      // Jump if obstacle is getting close
       if (dx > 0 && dx < react) {
-        jump = Math.random() < 0.98;
+        jump = Math.random() < 0.99;
         break;
       }
     }
@@ -1560,16 +1553,16 @@ function updateAI(sc, time) {
         if (
           Math.abs(m.y - p.groundY) < 50 &&
           m.x - DX > 0 &&
-          m.x - DX < react * 0.85
+          m.x - DX < react * 1.2
         ) {
-          jump = Math.random() < 0.98;
+          jump = Math.random() < 0.99;
           break;
         }
       }
     }
 
     if (jump) doJump(sc, p);
-    p.aiNext = time + 20 + Math.random() * 20; // Extremely fast checks for precision
+    p.aiNext = time + 5 + Math.random() * 5; // Chequeo hiper rápido casi por fotograma
   }
 }
 
